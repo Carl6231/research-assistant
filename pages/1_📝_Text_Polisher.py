@@ -1,13 +1,55 @@
 import streamlit as st
 from openai import OpenAI
 
+# 侧边栏配置区域
+st.sidebar.markdown("### 🔑 API 配置")
+
+# 用户自定义 API Key
+user_api_key = st.sidebar.text_input(
+    "API Key:",
+    type="password",
+    placeholder="输入你的 DeepSeek API Key（留空使用系统默认）",
+    help="如果留空，将尝试使用系统配置的默认 Key"
+)
+
+# 用户自定义 Base URL
+user_base_url = st.sidebar.text_input(
+    "Base URL:",
+    value="https://api.deepseek.com",
+    placeholder="API 服务地址",
+    help="DeepSeek API 服务地址，通常为 https://api.deepseek.com"
+)
+
+st.sidebar.markdown("---")
+
+# 获取有效的 API Key（优先级逻辑）
+def get_valid_api_key():
+    """获取有效的 API Key，按优先级：用户输入 > 系统配置 > None"""
+    if user_api_key and user_api_key.strip():
+        return user_api_key.strip()
+
+    try:
+        return st.secrets["DEEPSEEK_API_KEY"]
+    except KeyError:
+        return None
+
 # 初始化 OpenAI 客户端
-@st.cache_resource
 def get_client():
-    return OpenAI(
-        api_key=st.secrets["DEEPSEEK_API_KEY"],
-        base_url="https://api.deepseek.com"
-    )
+    """获取配置好的 OpenAI 客户端"""
+    final_api_key = get_valid_api_key()
+    final_base_url = user_base_url.strip() if user_base_url and user_base_url.strip() else "https://api.deepseek.com"
+
+    if not final_api_key:
+        return None, "请输入 API Key 或确保系统配置了默认 Key"
+
+    try:
+        client = OpenAI(
+            api_key=final_api_key,
+            base_url=final_base_url
+        )
+        return client, None
+    except Exception as e:
+        return None, f"初始化客户端失败：{str(e)}"
 
 # 设置页面配置
 st.set_page_config(
@@ -19,6 +61,24 @@ st.set_page_config(
 # 页面标题
 st.title("📝 学术润色")
 st.markdown("---")
+
+# API 配置状态显示
+api_status_col, api_key_info_col = st.sidebar.columns([1, 2])
+with api_status_col:
+    if get_valid_api_key():
+        st.success("✅")
+    else:
+        st.error("❌")
+
+with api_key_info_col:
+    if user_api_key:
+        st.caption("使用自定义 Key")
+    elif get_valid_api_key():
+        st.caption("使用系统默认 Key")
+    else:
+        st.caption("未配置 Key")
+
+st.sidebar.markdown("---")
 
 # 功能说明
 st.markdown("### 🎯 功能介绍")
@@ -79,15 +139,19 @@ def get_system_prompt(style, text_type):
 # 润色按钮
 if st.button("🚀 开始润色", type="primary"):
     if input_text.strip():
+        # 检查 API Key 配置
+        client, error_msg = get_client()
+        if error_msg:
+            st.error(error_msg)
+            st.info("请在左侧配置区域输入有效的 API Key")
+            st.stop()
+
         # 生成系统提示词
         system_prompt = get_system_prompt(language_style, text_type)
 
         # 显示加载动画
         with st.spinner("正在使用 AI 润色文本，请稍候..."):
             try:
-                # 获取客户端
-                client = get_client()
-
                 # 调用 DeepSeek API
                 response = client.chat.completions.create(
                     model="deepseek-chat",
@@ -138,28 +202,18 @@ if st.button("🚀 开始润色", type="primary"):
                     )
 
                 with col_copy:
-                    # 复制到剪贴板功能（需要 JavaScript）
-                    st.markdown("""
-                    <script>
-                    function copyToClipboard() {
-                        var text = """ + '"' + polished_text.replace('"', '\\"') + '"' + """;
-                        navigator.clipboard.writeText(text).then(function() {
-                            alert('文本已复制到剪贴板！');
-                        });
-                    }
-                    </script>
-                    <button onclick="copyToClipboard()" class="stButton">📋 复制到剪贴板</button>
-                    """, unsafe_allow_html=True)
+                    # 简化的复制功能
+                    st.code(polished_text, language=None)
 
             except Exception as e:
                 # 显示错误信息
                 st.error(f"调用 API 时出现错误：{str(e)}")
-                st.info("请检查网络连接或稍后重试。")
+                st.info("请检查网络连接、API Key 配置或稍后重试。")
 
     else:
         st.warning("请先输入需要润色的文本！")
 
-# 侧边栏
+# 侧边栏高级设置
 st.sidebar.markdown("### ⚙️ 高级设置")
 formal_level = st.sidebar.slider("正式程度", 1, 5, 3)
 technical_terms = st.sidebar.checkbox("保留专业术语", value=True)
@@ -174,20 +228,35 @@ st.sidebar.write(f"**正式程度**: {formal_level}/5")
 st.sidebar.write(f"**保留专业术语**: {'是' if technical_terms else '否'}")
 st.sidebar.write(f"**保持结构**: {'是' if keep_structure else '否'}")
 
+# API 配置详情
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 🔑 API 配置详情")
+with st.sidebar.expander("查看配置详情"):
+    if user_api_key:
+        st.code(f"自定义 Key: {user_api_key[:10]}...{user_api_key[-4:]}", language=None)
+    elif get_valid_api_key():
+        st.code("使用系统默认 Key", language=None)
+    else:
+        st.code("未配置", language=None)
+    st.code(f"Base URL: {user_base_url if user_base_url else 'https://api.deepseek.com'}", language=None)
+
 st.sidebar.markdown("---")
 st.sidebar.markdown("### 📝 使用提示")
 st.sidebar.info("""
-1. 确保输入文本完整清晰
-2. 选择合适的文本类型和风格
-3. 根据需要调整高级设置
-4. 检查润色结果并微调
-5. 建议分段润色长文本
+1. 配置有效的 API Key
+2. 确保 Base URL 正确
+3. 选择合适的文本类型和风格
+4. 根据需要调整高级设置
+5. 检查润色结果并微调
+6. 建议分段润色长文本
 """)
 
 # 添加使用统计
 st.sidebar.markdown("---")
-st.sidebar.markdown("### 📊 API 状态")
-if 'client' in st.session_state:
-    st.sidebar.success("✅ API 连接正常")
+st.sidebar.markdown("### 📊 连接状态")
+if get_valid_api_key():
+    st.sidebar.success("✅ API Key 已配置")
+    st.sidebar.write(f"🔗 Base URL: {user_base_url if user_base_url else 'https://api.deepseek.com'}")
 else:
-    st.sidebar.info("⏳ 等待连接...")
+    st.sidebar.warning("⚠️ 需要配置 API Key")
+    st.sidebar.info("请在左侧输入 API Key")
