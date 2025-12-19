@@ -1,7 +1,31 @@
 import streamlit as st
 from openai import OpenAI
 import json
+import re
 from datetime import datetime
+
+# JSON 清洗函数
+def clean_and_parse_json(text):
+    """从 AI 回复中提取和清洗 JSON 数据"""
+    # 1. 尝试找到被 ```json ... ``` 包裹的内容
+    json_match = re.search(r'```json\s*(.*?)\s*```', text, re.DOTALL)
+    if json_match:
+        text = json_match.group(1)
+    # 2. 如果没有包裹，尝试找到第一个 [ 或 { 开始，到最后一个 ] 或 } 结束的内容
+    else:
+        list_match = re.search(r'\[.*\]', text, re.DOTALL)
+        dict_match = re.search(r'\{.*\}', text, re.DOTALL)
+        if list_match:
+            text = list_match.group(0)
+        elif dict_match:
+            text = dict_match.group(0)
+
+    # 3. 尝试解析
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        # 如果还是失败，抛出包含原始内容的错误，方便调试
+        raise ValueError(f"无法解析 JSON。原始内容:\n{text}")
 
 # 设置页面配置
 st.set_page_config(
@@ -157,41 +181,42 @@ def step1_idea_burst():
     if st.button("🧠 生成科学假设", type="primary", disabled=not idea_input.strip()):
         with st.spinner("正在分析并生成科学假设..."):
             try:
-                prompt = f"""基于以下研究想法，请生成3个具体的、可验证的科学假设，每个假设都包含：
-1. 明确的研究问题
-2. 具体的创新点
-3. 研究的可行性分析
+                # 强化的 Prompt，明确要求 JSON 格式
+                prompt = f"""基于以下研究想法，请生成3个具体的、可验证的科学假设。
 
 研究想法：{idea_input}
 
-请以JSON格式返回，格式如下：
-{{
-    "hypotheses": [
-        {{
-            "id": 1,
-            "hypothesis": "具体的假设描述",
-            "innovation": "创新点说明",
-            "feasibility": "可行性分析"
-        }},
-        {{
-            "id": 2,
-            "hypothesis": "具体的假设描述",
-            "innovation": "创新点说明",
-            "feasibility": "可行性分析"
-        }},
-        {{
-            "id": 3,
-            "hypothesis": "具体的假设描述",
-            "innovation": "创新点说明",
-            "feasibility": "可行性分析"
-        }}
-    ]
-}}"""
+请严格按照以下 JSON 格式返回，不要添加任何其他文字：
+[
+    {{
+        "id": 1,
+        "hypothesis": "具体的假设描述",
+        "innovation": "创新点说明",
+        "feasibility": "可行性分析"
+    }},
+    {{
+        "id": 2,
+        "hypothesis": "具体的假设描述",
+        "innovation": "创新点说明",
+        "feasibility": "可行性分析"
+    }},
+    {{
+        "id": 3,
+        "hypothesis": "具体的假设描述",
+        "innovation": "创新点说明",
+        "feasibility": "可行性分析"
+    }}
+]
+
+每个假设应该：
+- 具体且可验证
+- 有明确的创新点
+- 具备研究的可行性"""
 
                 response = client.chat.completions.create(
                     model=model_name,
                     messages=[
-                        {"role": "system", "content": "你是一个专业的科研顾问，擅长将模糊的想法转化为具体的科学假设。"},
+                        {"role": "system", "content": """You are a research assistant. You MUST return the response in strict JSON format. Do not add any conversational text or explanations outside the JSON structure. The format must be a LIST of objects with exact keys: 'id', 'hypothesis', 'innovation', 'feasibility'."""},
                         {"role": "user", "content": prompt}
                     ],
                     max_tokens=2000,
@@ -200,14 +225,55 @@ def step1_idea_burst():
 
                 result = response.choices[0].message.content.strip()
 
-                # 解析JSON
+                # 使用清洗函数解析 JSON
                 try:
-                    hypotheses_data = json.loads(result)
-                    st.session_state.data['hypotheses'] = hypotheses_data['hypotheses']
-                    st.success("✅ 成功生成3个科学假设！")
-                except json.JSONDecodeError:
-                    st.error("解析AI回复时出错，请重试")
-                    st.code(result)
+                    hypotheses_data = clean_and_parse_json(result)
+
+                    # 验证数据结构
+                    if not isinstance(hypotheses_data, list):
+                        raise ValueError("返回的数据不是列表格式")
+
+                    # 验证每个假设的结构
+                    valid_hypotheses = []
+                    for i, hypo in enumerate(hypotheses_data[:3], 1):  # 最多取前3个
+                        if all(key in hypo for key in ['hypothesis', 'innovation', 'feasibility']):
+                            hypo['id'] = i
+                            valid_hypotheses.append(hypo)
+
+                    if not valid_hypotheses:
+                        raise ValueError("没有找到有效的假设数据")
+
+                    st.session_state.data['hypotheses'] = valid_hypotheses
+                    st.success(f"✅ 成功生成 {len(valid_hypotheses)} 个科学假设！")
+
+                except Exception as parse_error:
+                    st.error(f"🔍 **JSON 解析失败**: {str(parse_error)}")
+
+                    # 显示调试信息
+                    with st.expander("🐛 调试信息 - 查看 AI 原始回复", expanded=True):
+                        st.markdown("##### AI 原始回复:")
+                        st.code(result, language=None)
+
+                        st.markdown("##### 清洗后内容:")
+                        try:
+                            # 尝试显示清洗后的内容
+                            json_match = re.search(r'```json\s*(.*?)\s*```', result, re.DOTALL)
+                            if json_match:
+                                cleaned_text = json_match.group(1)
+                                st.code(cleaned_text, language=None)
+                            else:
+                                list_match = re.search(r'\[.*\]', result, re.DOTALL)
+                                dict_match = re.search(r'\{.*\}', result, re.DOTALL)
+                                if list_match:
+                                    st.code(list_match.group(0), language=None)
+                                elif dict_match:
+                                    st.code(dict_match.group(0), language=None)
+                                else:
+                                    st.code("未找到 JSON 结构", language=None)
+                        except:
+                            st.code("清洗过程出错", language=None)
+
+                    st.info("💡 **建议**：请点击'重新生成'按钮，或者检查研究想法的描述是否清晰。")
 
             except Exception as e:
                 st.error(f"生成假设时出现错误：{str(e)}")
@@ -277,7 +343,7 @@ def step2_methodology():
                 response = client.chat.completions.create(
                     model=model_name,
                     messages=[
-                        {"role": "system", "content": "你是一个专业的研究方法学家，擅长设计可行的研究方案和技术路线。"},
+                        {"role": "system", "content": "你是一个专业的研究方法学家，擅长设计可行的研究方案和技术路线。请严格按照指定的JSON格式返回结果。"},
                         {"role": "user", "content": prompt}
                     ],
                     max_tokens=2500,
@@ -287,12 +353,13 @@ def step2_methodology():
                 result = response.choices[0].message.content.strip()
 
                 try:
-                    methodology_data = json.loads(result)
+                    methodology_data = clean_and_parse_json(result)
                     st.session_state.data['methodology'] = methodology_data['routes']
                     st.success("✅ 成功生成技术路线方案！")
-                except json.JSONDecodeError:
-                    st.error("解析AI回复时出错，请重试")
-                    st.code(result)
+                except Exception as parse_error:
+                    st.error(f"解析技术路线数据时出错：{str(parse_error)}")
+                    with st.expander("查看原始回复"):
+                        st.code(result)
 
             except Exception as e:
                 st.error(f"生成技术路线时出现错误：{str(e)}")
@@ -578,6 +645,7 @@ st.sidebar.info("""
 3. 🔄 **随时回退**修改之前的决定
 4. 📄 **直接导出**Markdown格式文档
 5. ⚡ **流程化设计**比聊天更高效
+6. 🐛 **调试模式**遇到JSON错误时可查看原始回复
 """)
 
 # 连接状态
