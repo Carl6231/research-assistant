@@ -34,7 +34,7 @@ user_base_url = st.sidebar.text_input(
 # 模型选择
 model_name = st.sidebar.selectbox(
     "Model:",
-    options=["deepseek-chat", "deepseek-coder"],
+    options=["deepseek-chat", "deepseek-reasoner"],
     index=0,
     help="选择使用的模型"
 )
